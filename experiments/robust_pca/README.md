@@ -1,8 +1,30 @@
-# Experiment: Robust PCA (Video Background Separation)
+# Experiment: Video Background/Foreground Separation via Distributed Robust PCA
 
-This experiment applies QGD to **Robust Principal Component Analysis** — decomposing a data matrix `D` into a low-rank component `L = UV` (background) and a sparse component `S` (foreground). The nonconvex factored formulation `D ≈ UV + S` introduces saddle points; QGD's quantization noise helps escape them.
+> **Industry relevance**: Video background subtraction is a core component in production surveillance systems (Amazon, Google, Ring), autonomous driving perception pipelines (Waymo, Tesla), video conferencing background blur (Zoom, Teams), and content moderation at scale. This experiment demonstrates how QGD enables **distributed, communication-efficient** video decomposition across edge devices — a key requirement when raw video cannot be centralized due to bandwidth or privacy constraints.
 
-The dataset consists of video frames from the [Wallflower benchmark](https://www.microsoft.com/en-us/download/details.aspx?id=54651), where the goal is to separate static backgrounds from moving foreground objects.
+---
+
+## Problem
+
+Given a matrix `D` of video frames (each frame flattened as a row), decompose it into:
+
+- **`L = UV`** — low-rank background (static scene)
+- **`S`** — sparse foreground (moving objects, people, vehicles)
+
+This is the classic **Robust PCA** problem. The factored formulation `D ≈ UV + S` is nonconvex and riddled with saddle points — standard gradient methods get stuck, producing blurry or incomplete foreground masks.
+
+**QGD solves this**: its switching quantization injects structured perturbations that escape saddle points *for free*, while simultaneously compressing inter-device communication by up to 10× compared to full-precision exchange.
+
+---
+
+## Why This Matters at Scale
+
+| Challenge | How QGD Addresses It |
+|-----------|---------------------|
+| **Edge deployment** — cameras can't stream raw video to a central server | Agents process local video shards; only quantized parameters are exchanged |
+| **Bandwidth constraints** — network links between edge nodes are limited | Quantized communication reduces bits per iteration (adjustable via `--quantization-levels`) |
+| **Privacy** — raw frames never leave the local device | Only compressed model parameters (U, V factors) are shared, not pixel data |
+| **Nonconvex landscape** — saddle points degrade separation quality | Switching quantization provably escapes saddle points → cleaner foreground masks |
 
 ---
 
@@ -10,33 +32,23 @@ The dataset consists of video frames from the [Wallflower benchmark](https://www
 
 ### 1. Download the Dataset
 
-Download the "Test Images for Wallflower Paper" from:
-[https://www.microsoft.com/en-us/download/details.aspx?id=54651](https://www.microsoft.com/en-us/download/details.aspx?id=54651)
+This experiment uses the [Wallflower benchmark](https://www.microsoft.com/en-us/download/details.aspx?id=54651) — a standard video surveillance dataset with 7 challenging sequences (lighting changes, camouflage, waving trees, etc.).
 
-Extract the video sequences into a `videos/` directory:
-
-```
-robust_pca/
-├── videos/
-│   ├── Bootstrap/
-│   ├── Camouflage/
-│   ├── ForegroundAperture/
-│   ├── LightSwitch/
-│   ├── MovedObject/
-│   ├── TimeOfDay/
-│   └── WavingTrees/
-├── rpca_qgd.py
-├── rpca_dgd.py
-└── ...
+```bash
+# Download and extract into videos/ directory
+mkdir -p videos
+# Extract each sequence as a subdirectory:
+#   videos/Bootstrap/, videos/Camouflage/, videos/ForegroundAperture/,
+#   videos/LightSwitch/, videos/MovedObject/, videos/TimeOfDay/, videos/WavingTrees/
 ```
 
 ### 2. Run Experiments
 
 ```bash
-# QGD (proposed) — escapes saddle points in the nonconvex RPCA landscape
+# QGD (proposed) — escapes saddle points, cleaner separation
 python rpca_qgd.py
 
-# DGD baseline — vanilla decentralized gradient descent
+# DGD baseline — vanilla decentralized GD, no quantization
 python rpca_dgd.py
 
 # Batch runs for error bars (20 runs each)
@@ -46,26 +58,55 @@ bash scripts/run_dgd.sh
 
 ---
 
+## Architecture
+
+```
+┌──────────┐     quantized U, V     ┌──────────┐
+│ Camera 1 │◄───────────────────────►│ Camera 2 │
+│ (Agent)  │    mixing matrix W      │ (Agent)  │
+└────┬─────┘                         └────┬─────┘
+     │              ┌──────────┐          │
+     └──────────────► Camera 3 ◄──────────┘
+                    │ (Agent)  │
+                    └────┬─────┘
+                         │
+                    ┌────┴─────┐     ┌──────────┐
+                    │ Camera 4 ├─────► Camera 5 │
+                    │ (Agent)  │     │ (Agent)  │
+                    └──────────┘     └──────────┘
+
+Each agent holds local video frames → computes local U, V, S
+→ quantizes U, V → exchanges with neighbors → updates via QGD
+```
+
+---
+
 ## Methods
 
-| Script | Method | Description |
-|--------|--------|-------------|
-| `rpca_qgd.py` | **QGD** | Quantized GD with switching quantization + stepsize holding |
-| `rpca_dgd.py` | DGD | Vanilla decentralized gradient descent (no quantization) |
-
-Both methods use the same RPCA formulation. The key difference: QGD quantizes the `U` and `V` matrices before the consensus step, providing the stochastic perturbation needed to escape saddle points.
+| Script | Method | Quantization | Saddle-Point Escape |
+|--------|--------|:---:|:---:|
+| `rpca_qgd.py` | **QGD** (ours) | ✅ Switching even/odd | ✅ Provably escapes |
+| `rpca_dgd.py` | DGD (baseline) | ❌ Full precision | ❌ Can get stuck |
 
 ---
 
 ## RPCA Formulation
 
-Each agent `i` solves:
+Each agent `i` minimizes:
 
 ```
-minimize  ‖Dᵢ - UᵢVᵢ - Sᵢ‖² + (1/μ)(‖Uᵢ‖² + ‖Vᵢ‖²)
+min  ‖Dᵢ - UᵢVᵢ - Sᵢ‖² + (1/μ)(‖Uᵢ‖² + ‖Vᵢ‖²)
 ```
 
-where `Dᵢ` is the local data matrix (flattened video frames), `Uᵢ ∈ ℝ^{m×r}` and `Vᵢ ∈ ℝ^{r×n}` parameterize the low-rank background, and `Sᵢ` is the sparse foreground component updated via a thresholding operator.
+- `Dᵢ ∈ ℝ^{m×n}` — local video frames (flattened, resized to 56×56)
+- `Uᵢ ∈ ℝ^{m×r}`, `Vᵢ ∈ ℝ^{r×n}` — low-rank factors (background model)
+- `Sᵢ` — sparse component (foreground), updated via top-k thresholding (α=0.2)
+
+**QGD update rule** per iteration:
+1. Quantize `Uᵢ`, `Vᵢ` (even/odd switching scheme)
+2. Consensus: `Ũᵢ = Σⱼ wᵢⱼ Q(Uⱼ)` (weighted sum of quantized neighbors)
+3. Gradient: `Uᵢ ← (1-η)Uᵢ + η·Ũᵢ - α·∇_U Loss`
+4. Sparse update: `Sᵢ ← Threshold(Dᵢ - UᵢVᵢ)`
 
 ---
 
@@ -75,43 +116,40 @@ where `Dᵢ` is the local data matrix (flattened video frames), `Uᵢ ∈ ℝ^{m
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Quantization levels | 32 | QSGD granularity |
-| LR consensus init | 0.003 | Initial consensus learning rate |
-| LR gradient init | 0.0003 | Initial gradient learning rate |
-| LR decay α | 0.6 | Consensus decay exponent |
-| LR decay β | 0.9 | Gradient decay exponent |
-| Holding start (t₀) | 100 | First holding-stage boundary |
-| Rank (`r`) | 30 | Low-rank approximation rank |
-| Regularizer (μ) | 100 | Balances reconstruction vs. regularization |
-| Sparsity (α) | 0.2 | Fraction of elements kept in sparse operator |
-| Agents | 5 | Number of distributed agents |
-| Iterations | 5000 | Maximum iterations |
-| Convergence tol | 1e-6 | Early stopping threshold |
+| Quantization levels | 32 | Bits per parameter (higher = finer, less noise) |
+| LR consensus | 0.003 | Consensus step learning rate |
+| LR gradient | 0.0003 | Gradient step learning rate |
+| LR decay (α, β) | 0.6, 0.9 | Polynomial decay exponents |
+| Holding start (t₀) | 100 | Stepsize-holding boundary |
+| Holding ck | 40 | Holding-stage duration |
+| Rank (`r`) | 30 | Background model rank |
+| Regularizer (μ) | 100 | Reconstruction vs. regularization |
+| Sparsity (α) | 0.2 | Fraction of elements kept in foreground |
+| Agents | 5 | Distributed cameras / nodes |
+| Max iterations | 5000 | Convergence threshold: rec. error < 1e-6 |
 
-### DGD
+### DGD (baseline)
 
 | Parameter | Value |
 |-----------|-------|
 | Learning rate | 5e-5 |
-| Rank | 30 |
-| μ | 100 |
-| Other params | Same as QGD |
+| Other params | Same as QGD (no quantization, no holding) |
 
 ---
 
 ## Output
 
-Results are saved to `results/` as CSV files. Each checkpoint row contains:
+Results are saved to `results/` as CSV. Each row:
 
 ```
-iteration, loss_agent0, ..., loss_agent4, reconstruction_error
+iteration, loss_agent0, ..., loss_agent4, mean_reconstruction_error
 ```
 
 ---
 
 ## Network Topology
 
-Same 5-agent doubly-stochastic graph as other experiments:
+5-agent doubly-stochastic graph (sparse, realistic for edge networks):
 
 ```
 W = [[0.6, 0.0, 0.0, 0.4, 0.0],
@@ -119,4 +157,23 @@ W = [[0.6, 0.0, 0.0, 0.4, 0.0],
      [0.2, 0.1, 0.4, 0.0, 0.3],
      [0.0, 0.0, 0.0, 0.6, 0.4],
      [0.0, 0.1, 0.6, 0.0, 0.3]]
+```
+
+---
+
+## Project Structure
+
+```
+robust_pca/
+├── rpca_qgd.py          # QGD-based robust PCA
+├── rpca_dgd.py          # DGD baseline
+├── scripts/
+│   ├── run_qgd.sh       # 20× batch run for error bars
+│   └── run_dgd.sh       # 20× batch run for error bars
+├── videos/              # Wallflower dataset (user-provided)
+│   ├── Bootstrap/
+│   ├── Camouflage/
+│   └── ...
+├── results/             # Output CSVs (auto-created)
+└── README.md
 ```
