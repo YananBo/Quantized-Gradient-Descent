@@ -53,8 +53,8 @@ Each experiment has its **own README** with setup instructions, CLI usage, and h
 
 ```bash
 # Clone the repository
-git clone https://github.com/YananBo/quantization-avoids-saddle-points-in-distributed-optimization.git
-cd quantization-avoids-saddle-points-in-distributed-optimization
+git clone https://github.com/YananBo/qgd-distributed-optimizer.git
+cd qgd-distributed-optimizer
 
 # Install dependencies
 pip install -r requirements.txt
