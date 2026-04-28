@@ -157,29 +157,6 @@ def log_to_csv(filename, iteration, loss_value, rec_error):
         writer.writerow([rec_error])
         writer.writerow([])
 
-
-# Quantizer
-# def quantizer (parameters_list, level, device):  
-#     quantized_parameters_list = copy.deepcopy (parameters_list) 
-#     #print(len(quantized_parameters_list))=#agents
-#     for i in range(len(quantized_parameters_list)):
-#         # print(len(quantized_parameters_list[i]))=4, core+factors0123
-        
-#         norm = tl.norm(parameters_list[i].data, 2)
-#         # print(quantized_parameters_list[0][0].data)
-#         # print(norm)
-#         if norm <= 0.1: #norm cannot be zero
-#             norm = 0.1
-#         level_float = level * tl.abs(parameters_list[i].data) / norm
-#         # print(level_float)
-#         previous_level = torch.floor(level_float)
-#         # print(quantized_parameters_list[i][j].data.shape)  
-#         is_next_level = torch.rand(*parameters_list[i].data.shape, device=device) < (level_float - previous_level)
-#         new_level = previous_level + is_next_level
-#         quantized_parameters_list[i].data = tl.sign(parameters_list[i].data) * norm * new_level / level   
-        
-#     return quantized_parameters_list
-
 def quantizer(parameters_list, level, device):
 
     quantized_parameters_list = copy.deepcopy (parameters_list) 
